@@ -12,7 +12,7 @@ jobs:
       actions: write
       contents: read
     
-    # 静态映射多账号密钥与新浪邮箱通知配置
+    # 静态映射多账号密钥与新浪邮箱通知配置（默认支持到 3 个账号，可按需增减）
     env:
       # --- 账号 1 配置 ---
       ACC1_EMAIL: ${{ secrets.EMAIL_1 }}
@@ -23,6 +23,11 @@ jobs:
       ACC2_EMAIL: ${{ secrets.EMAIL_2 }}
       ACC2_PASSWORD: ${{ secrets.PASSWORD_2 }}
       ACC2_NODE: ${{ secrets.NODE_LINK_2 }}
+
+      # --- 账号 3 配置 ---
+      ACC3_EMAIL: ${{ secrets.EMAIL_3 }}
+      ACC3_PASSWORD: ${{ secrets.PASSWORD_3 }}
+      ACC3_NODE: ${{ secrets.NODE_LINK_3 }}
 
       # --- 新浪邮箱通知配置 ---
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
@@ -44,10 +49,14 @@ jobs:
           pip install seleniumbase requests
           seleniumbase install chromedriver
 
-      - name: 🚀 循环串行执行多账号保活
+      - name: 🚀 循环串行执行多账号保活并记录三种状态
         run: |
-          # 定义要依次处理的账号编号列表（当前配置了 1 和 2。若有第3个可改为 "1 2 3"）
-          ACCOUNTS="1 2"
+          # 初始化邮件报告临时文件
+          echo "你好！以下是本次 Bot-Hosting 多账号保活的执行明细：" > report.txt
+          echo "----------------------------------------" >> report.txt
+
+          # 定义要依次处理的账号编号列表（当前检测 1、2、3 号账号）
+          ACCOUNTS="1 2 3"
 
           for i in $ACCOUNTS; do
             # 动态获取对应编号的账号配置
@@ -55,9 +64,12 @@ jobs:
             eval password=\$ACC${i}_PASSWORD
             eval node_link=\$ACC${i}_NODE
 
-            # 如果邮箱为空，说明未配置该账号，直接跳过
+            # 如果邮箱为空，说明未配置该账号，记录为“跳过”状态并继续下一个
             if [ -z "$email" ]; then
               echo "账号 $i 未配置或邮箱为空，跳过..."
+              echo "账号槽位: 账号 $i (未配置)" >> report.txt
+              echo "状态: 跳过 (Skipped) ⏭️" >> report.txt
+              echo "----------------------------------------" >> report.txt
               continue
             fi
 
@@ -74,12 +86,24 @@ jobs:
               echo "⚠️ 账号 $i 未配置代理节点，将直接联网..."
             fi
 
-            # 2. 运行续期脚本
+            # 2. 运行续期脚本并捕获执行状态（成功/失败）
             export EMAIL="$email"
             export PASSWORD="$password"
             
             echo "▶ 正在运行 Python 续期脚本..."
-            xvfb-run --auto-servernum python3 app.py || echo "⚠️ 账号 $i 运行过程中出现错误，继续执行下一个..."
+            
+            if xvfb-run --auto-servernum python3 app.py; then
+              account_status="成功 (Success) ✅"
+              echo "✅ 账号 $i ($email) 保活成功"
+            else
+              account_status="失败 (Failed) ❌"
+              echo "❌ 账号 $i ($email) 保活失败"
+            fi
+
+            # 将当前账号的执行结果写入报告文件
+            echo "账号: $email" >> report.txt
+            echo "状态: $account_status" >> report.txt
+            echo "----------------------------------------" >> report.txt
 
             # 3. 清理当前账号的代理进程和浏览器残留，防止影响下一个账号
             echo "🧹 清理当前账号的临时进程和代理文件..."
@@ -94,6 +118,13 @@ jobs:
             sleep 30
           done
 
+          # 将报告文件的内容读取并写入 GitHub 环境变量供后续邮件使用
+          {
+            echo "MAIL_CONTENT<<EOF"
+            cat report.txt
+            echo "EOF"
+          } >> $GITHUB_ENV
+
       - name: 🧽 清理进程和临时文件
         if: always()
         run: |
@@ -103,7 +134,7 @@ jobs:
           pkill -f Xvfb || true
           rm -f sing-box sing-box-config.json sing-box.log
 
-      - name: 📧 发送新浪邮箱执行结果通知
+      - name: 📧 发送包含三种状态明细的新浪邮箱通知
         if: always() # 无论成功或失败都会发送邮件
         uses: dawidd6/action-send-mail@v3
         with:
@@ -113,15 +144,7 @@ jobs:
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
           subject: "【Bot-Hosting】多账号保活任务执行报告 (${{ job.status }})"
-          body: |
-            你好！
-            你的 Bot-Hosting 多账号保活任务已执行完毕。
-            
-            本次运行状态: ${{ job.status }}
-            仓库名称: ${{ github.repository }}
-            触发方式: ${{ github.event_name }}
-            
-            请登录 GitHub 仓库查看具体的 Actions 运行日志。
+          body: ${{ env.MAIL_CONTENT }}     # 使用包含成功/失败/跳过的动态明细
           to: ${{ secrets.MAIL_TO }}
           from: Bot-Hosting Watcher <${{ secrets.MAIL_USERNAME }}>
 

@@ -12,7 +12,7 @@ jobs:
       actions: write
       contents: read
     
-    # 1. 在这里静态映射多个账号的密钥（目前配置了 2 个账号，可按需扩展）
+    # 多账号配置与邮件配置
     env:
       # --- 账号 1 配置 ---
       ACC1_EMAIL: ${{ secrets.EMAIL_1 }}
@@ -24,9 +24,10 @@ jobs:
       ACC2_PASSWORD: ${{ secrets.PASSWORD_2 }}
       ACC2_NODE: ${{ secrets.NODE_LINK_2 }}
 
-      # --- 通用通知配置 ---
-      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      # --- 邮件通知配置 ---
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      MAIL_TO: ${{ secrets.MAIL_TO }}
 
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +37,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 🛠️ 安装系统依赖和 Python 依赖（只需安装一次）
+      - name: 🛠️ 安装系统依赖和 Python 依赖
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk jq wget
@@ -45,17 +46,13 @@ jobs:
 
       - name: 🚀 循环串行执行多账号保活
         run: |
-          # 定义要依次处理的账号编号列表（这里有 2 个：1 和 2）
-          # 如果以后有第 3 个账号，只需改成 "1 2 3" 即可
           ACCOUNTS="1 2"
 
           for i in $ACCOUNTS; do
-            # 利用 bash 间接寻址动态获取对应编号的账号配置
             eval email=\$ACC${i}_EMAIL
             eval password=\$ACC${i}_PASSWORD
             eval node_link=\$ACC${i}_NODE
 
-            # 如果邮箱为空（说明没配置这个账号），则跳过
             if [ -z "$email" ]; then
               echo "账号 $i 未配置或邮箱为空，跳过..."
               continue
@@ -65,7 +62,6 @@ jobs:
             echo "🚀 开始处理第 $i 个账号: $email"
             echo "=================================================="
 
-            # 1. 设置当前账号的代理 (sing-box)
             if [ -n "$node_link" ]; then
               echo "⚙ 正在为账号 $i 配置专属代理..."
               export NODE_LINK="$node_link"
@@ -74,14 +70,12 @@ jobs:
               echo "⚠️ 账号 $i 未配置代理节点，将直接联网..."
             fi
 
-            # 2. 运行续期脚本
             export EMAIL="$email"
             export PASSWORD="$password"
             
             echo "▶ 正在运行 Python 续期脚本..."
             xvfb-run --auto-servernum python3 app.py || echo "⚠️ 账号 $i 运行过程中出现错误，继续执行下一个..."
 
-            # 3. 清理当前账号的代理进程和浏览器残留，防止影响下一个账号
             echo "🧹 清理当前账号的临时进程和代理文件..."
             pkill -f sing-box || true
             pkill -f chromedriver || true
@@ -89,7 +83,6 @@ jobs:
             pkill -f Xvfb || true
             rm -f sing-box sing-box-config.json sing-box.log
 
-            # 4. 账号之间暂停 30 秒，避免请求过于密集触发面板/Cloudflare 风控
             echo "⏳ 暂停 30 秒后处理下一个账号..."
             sleep 30
           done
@@ -102,6 +95,29 @@ jobs:
           pkill -f chrome || true
           pkill -f Xvfb || true
           rm -f sing-box sing-box-config.json sing-box.log
+
+      # --- 新增：发送邮件通知步骤 ---
+      - name: 📧 发送执行结果邮件通知
+        if: always() # 无论成功或失败都会发送邮件
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.qq.com       # 如果是163邮箱，请改为 smtp.163.com；Gmail改为 smtp.gmail.com
+          server_port: 465                  # SSL加密端口，一般QQ/163选465
+          secure: true                      # 启用TLS/SSL
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: "【Bot-Hosting】保活任务执行报告 (${{ job.status }})"
+          body: |
+            你好！
+            你的 Bot-Hosting 多账号保活任务已执行完毕。
+            
+            本次运行状态: ${{ job.status }}
+            仓库名称: ${{ github.repository }}
+            触发方式: ${{ github.event_name }}
+            
+            请登录 GitHub 仓库查看具体的 Actions 运行日志。
+          to: ${{ secrets.MAIL_TO }}
+          from: Bot-Hosting Watcher <${{ secrets.MAIL_USERNAME }}>
 
       - name: 🧹 清理旧的工作流运行记录
         if: always()
